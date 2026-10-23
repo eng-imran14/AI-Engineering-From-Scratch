@@ -14,6 +14,40 @@ const escapeHtml = (text) => String(text).replace(/&/g, "&amp;").replace(/</g, "
 const pick = (value, gpu) => (value && typeof value === "object" && !Array.isArray(value) ? value[gpu] : value);
 const pillLayer = svg.querySelector("[data-pills]");
 
+function visualLen(str) {
+  let len = 0;
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if ((code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3400 && code <= 0x4dbf) || (code >= 0xff00 && code <= 0xffef)) {
+      len += 1.85;
+    } else {
+      len += 1;
+    }
+  }
+  return len;
+}
+Ink.pillSvg = function ([ax, ay], dx, dy, text, on, size = 10.5) {
+  const w = visualLen(text) * size * 0.62 + size * 1.6;
+  const h = size * 1.85;
+  const cx = ax + dx;
+  const cy = ay + dy;
+  const r = (v) => v.toFixed(1);
+  return `<g class="pill${on ? " on" : ""}"><path class="lead" d="M${r(ax)} ${r(ay)}L${r(cx)} ${r(cy + h / 2)}"/><circle class="lead-dot" cx="${r(ax)}" cy="${r(ay)}" r="1.6"/><rect x="${r(cx - w / 2)}" y="${r(cy - h / 2)}" width="${r(w)}" height="${r(h)}" rx="${r(h / 2)}"/><text x="${r(cx)}" y="${r(cy + size * 0.36)}" font-size="${size}" text-anchor="middle">${text}</text></g>`;
+};
+
+let currentLang = "en";
+function getInitialLang() {
+  try {
+    const q = new URLSearchParams(location.search).get("lang");
+    if (q && q.toLowerCase().startsWith("zh")) return "zh";
+    const saved = localStorage.getItem("lang");
+    if (saved && saved.toLowerCase().startsWith("zh")) return "zh";
+    if (!saved && navigator.language && navigator.language.toLowerCase().startsWith("zh")) return "zh";
+  } catch (_) {}
+  return "en";
+}
+currentLang = getInitialLang();
+
 const RIGS = {};
 for (const [name, rig] of Object.entries(D.rigs)) {
   const layer = svg.querySelector(`[data-rig="${name}"]`);
@@ -256,9 +290,12 @@ const PHONE_PILL = 17;
 const offsetOf = (r, asm) => mul(r.EXPLODE[asm] || [0, 0, 0], state.explode.shares[asm] ? state.explode.shares[asm].x : 0);
 const explodedAt = (r, label) => K.iso(add(label.at, offsetOf(r, label.asm)), r.P);
 function phoneLayout(r) {
-  if (r._phone) return r._phone;
-  const width = (text) => text.length * PHONE_PILL * 0.62 + PHONE_PILL * 1.6;
-  const entries = r.LABELS.map((label) => ({ label, a: K.iso(label.at, r.P), w: width(label.text) }));
+  if (r._phone && r._phoneLang === currentLang) return r._phone;
+  const width = (text) => visualLen(text) * PHONE_PILL * 0.62 + PHONE_PILL * 1.6;
+  const entries = r.LABELS.map((label) => {
+    const text = (currentLang === "zh" && I18n.ZH_LABELS[r.name]?.[label.id]) || label.text;
+    return { label: { ...label, text }, a: K.iso(label.at, r.P), w: width(text) };
+  });
   const ys = entries.map((e) => e.a[1]);
   const mid = (Math.min(...ys) + Math.max(...ys)) / 2;
   const out = [];
@@ -275,6 +312,7 @@ function phoneLayout(r) {
       });
     });
   }
+  r._phoneLang = currentLang;
   return (r._phone = out);
 }
 narrow.addEventListener("change", () => ((lastPills = ""), draw()));
@@ -412,7 +450,8 @@ function draw() {
   const pills = layout.map((label) => {
     const home = K.iso(label.at, r.P);
     const moved = explodedAt(r, label);
-    return Ink.pillSvg(moved, label.dx + home[0] - moved[0], label.dy + home[1] - moved[1], label.text, label.stations.some((s) => hotStations.has(s)) || state.selected === label.id, phone ? PHONE_PILL : undefined);
+    const text = (currentLang === "zh" && I18n.ZH_LABELS[r.name]?.[label.id]) || label.text;
+    return Ink.pillSvg(moved, label.dx + home[0] - moved[0], label.dy + home[1] - moved[1], text, label.stations.some((s) => hotStations.has(s)) || state.selected === label.id, phone ? PHONE_PILL : undefined);
   }).join("");
   const box = phone ? PHONE_BOX : FULL_BOX;
   if (svg.getAttribute("viewBox") !== box) {
@@ -444,7 +483,7 @@ function drawCut(r, pose) {
   const mix = state.mix || { K: 1, prefixCells: 0, myPrefix: 0, otherCells: 0, mineCells: 0 };
   const s = state.sim.serve;
   const ev = state.shown >= 0 ? state.sim.events[state.shown] : null;
-  const key = [phone, Math.round(anchor[0]), Math.round(anchor[1]), Math.round(pose.read * 13), pose.sm, mix.prefixCells, mix.myPrefix, mix.otherCells, mix.mineCells, ev ? ev.index : -1].join("|");
+  const key = [currentLang, phone, Math.round(anchor[0]), Math.round(anchor[1]), Math.round(pose.read * 13), pose.sm, mix.prefixCells, mix.myPrefix, mix.otherCells, mix.mineCells, ev ? ev.index : -1].join("|");
   if (key === lastCut) return;
   lastCut = key;
   cut.setAttribute("transform", `translate(${origin[0]} ${origin[1]})`);
@@ -460,10 +499,18 @@ function drawCut(r, pose) {
     if (node.dataset.c !== c) node.dataset.c = c;
   });
   pose.sm ? cutSm.setAttribute("data-on", "") : cutSm.removeAttribute("data-on");
-  let text = `KV pool: ${n(ev ? ev.poolUsed : 0)} of ${n(s.kvPagesTotal)} slots in use`;
-  if (ev && (ev.type === "decode" || ev.type === "decode-rest") && pose.sm) text = `result: +${n(s.tokensPerStep)} token${s.tokensPerStep === 1 ? "" : "s"}, +${n(s.tokensPerStep)} KV slot${s.tokensPerStep === 1 ? "" : "s"}`;
-  else if (ev && ev.type === "prefill") text = `result: ${n(ev.size)} KV slots written`;
-  else if (ev && (ev.type === "decode" || ev.type === "decode-rest")) text = s.weightReadShare === null ? "cause: the weights of the picked experts stream in" : `cause: ${n(s.weightReadShare * 100)}% of the step is this read`;
+  let text = "";
+  if (currentLang === "zh") {
+    text = `KV 缓存池: 已使用 ${n(ev ? ev.poolUsed : 0)} / ${n(s.kvPagesTotal)} 个插槽`;
+    if (ev && (ev.type === "decode" || ev.type === "decode-rest") && pose.sm) text = `结果: +${n(s.tokensPerStep)} 个 Token, +${n(s.tokensPerStep)} 个 KV 插槽`;
+    else if (ev && ev.type === "prefill") text = `结果: 写入 ${n(ev.size)} 个 KV 插槽`;
+    else if (ev && (ev.type === "decode" || ev.type === "decode-rest")) text = s.weightReadShare === null ? "原因: 流式读取批次选中的专家权重" : `原因: 本次权重读取占单步耗时的 ${n(s.weightReadShare * 100)}%`;
+  } else {
+    text = `KV pool: ${n(ev ? ev.poolUsed : 0)} of ${n(s.kvPagesTotal)} slots in use`;
+    if (ev && (ev.type === "decode" || ev.type === "decode-rest") && pose.sm) text = `result: +${n(s.tokensPerStep)} token${s.tokensPerStep === 1 ? "" : "s"}, +${n(s.tokensPerStep)} KV slot${s.tokensPerStep === 1 ? "" : "s"}`;
+    else if (ev && ev.type === "prefill") text = `result: ${n(ev.size)} KV slots written`;
+    else if (ev && (ev.type === "decode" || ev.type === "decode-rest")) text = s.weightReadShare === null ? "cause: the weights of the picked experts stream in" : `cause: ${n(s.weightReadShare * 100)}% of the step is this read`;
+  }
   cutTok.textContent = text;
 }
 
@@ -475,7 +522,7 @@ function drawSound(r) {
   let at = null;
   if (ev) {
     const step = M.STEPS[M.stepOf(ev.type)];
-    word = ev.type === "queue" ? "wait..." : ev.type === "decode-rest" ? "whoosh whoosh" : step.sound;
+    word = ev.type === "queue" ? (currentLang === "zh" ? "等待…" : "wait...") : ev.type === "decode-rest" ? (currentLang === "zh" ? "呼 呼" : "whoosh whoosh") : step.sound;
     const station = { reuse: "pool", first: "sms" }[ev.type] || ev.station;
     const label = r.LABELS.find((l) => l.stations.includes(station)) || r.LABELS.find((l) => l.id === station);
     if (label) at = explodedAt(r, label);
@@ -492,8 +539,10 @@ function drawDisplay(r, pose) {
   const s = state.sim.serve;
   const ev = state.shown >= 0 ? state.sim.events[state.shown] : null;
   const used = ev ? ev.poolUsed : 0;
-  const lines = [s.tokS === null ? "tok/s  --" : `tok/s  ${s.tokS.toLocaleString("en-US")}`, `KV  ${Math.round((used / s.kvPagesTotal) * 100)}%  ${n(s.running)} run ${n(s.waiting)} wait`, `read  ${n(pose.gbs)}/${s.peakGBs} GB/s`];
-  const key = lines.join("|") + r.name;
+  const lines = currentLang === "zh"
+    ? [s.tokS === null ? "tok/s  --" : `tok/s  ${s.tokS.toLocaleString("en-US")}`, `KV  ${Math.round((used / s.kvPagesTotal) * 100)}%  ${n(s.running)} 运行 ${n(s.waiting)} 排队`, `读取  ${n(pose.gbs)}/${s.peakGBs} GB/s`]
+    : [s.tokS === null ? "tok/s  --" : `tok/s  ${s.tokS.toLocaleString("en-US")}`, `KV  ${Math.round((used / s.kvPagesTotal) * 100)}%  ${n(s.running)} run ${n(s.waiting)} wait`, `read  ${n(pose.gbs)}/${s.peakGBs} GB/s`];
+  const key = lines.join("|") + r.name + currentLang;
   if (key === lastDisplay) return;
   lastDisplay = key;
   lines.forEach((text, i) => {
@@ -507,7 +556,7 @@ function drawGauge(pose) {
   const peak = state.sim.decode.bandwidth;
   const value = Math.round(pose.gbs);
   const step = pose.stepT;
-  const key = `${value}|${peak}|${Math.round(step * 100)}|${narrow.matches}`;
+  const key = `${value}|${peak}|${Math.round(step * 100)}|${narrow.matches}|${currentLang}`;
   if (key === lastGauge) return;
   lastGauge = key;
   const f = clamp(value / peak, 0, 1);
@@ -516,7 +565,7 @@ function drawGauge(pose) {
   $("[data-gauge-needle]").setAttribute("y2", (92 - Math.sin(angle) * 44).toFixed(1));
   const end = [70 + Math.cos(angle) * 50, 92 - Math.sin(angle) * 50];
   $("[data-gauge-fill]").setAttribute("d", f > 0.001 ? `M20 92A50 50 0 0 1 ${end[0].toFixed(1)} ${end[1].toFixed(1)}` : "");
-  $("[data-gauge-value]").textContent = value ? `${n(value)} GB/s` : state.sim.decode.effectiveGBs === null && state.sim.decode.tpot ? "not computed" : "idle";
+  $("[data-gauge-value]").textContent = value ? `${n(value)} GB/s` : state.sim.decode.effectiveGBs === null && state.sim.decode.tpot ? (currentLang === "zh" ? "未计算" : "not computed") : (currentLang === "zh" ? "空闲" : "idle");
   $("[data-gauge]").setAttribute("transform", narrow.matches ? "translate(196 532)" : "translate(6 4)");
   const cursor = $("[data-step-cursor]");
   cursor.style.left = step >= 0 ? `${(clamp(step, 0, 1) * 100).toFixed(1)}%` : "-10px";
@@ -587,11 +636,11 @@ function breakOne() {
   const i = breakIndex % M.BREAKS.length;
   breakIndex += 1;
   load({ ...M.DEFAULTS, ...M.BREAKS[i] }, { autoplay: true });
-  flash(C.BREAK_NOTES[i]);
+  flash(currentLang === "zh" ? I18n.ZH_BREAK_NOTES[i] : C.BREAK_NOTES[i]);
 }
 function repair() {
   load(M.DEFAULTS, { autoplay: true });
-  flash("Repaired: L4, BF16, 8 users, cool card, graphs and radix cache on.");
+  flash(currentLang === "zh" ? "已修复：L4、BF16、8 用户并发、正常散热、开启 CUDA Graphs 与 Radix 缓存。" : "Repaired: L4, BF16, 8 users, cool card, graphs and radix cache on.");
 }
 function toggleExplode() {
   state.explode.target = state.explode.target ? 0 : 1;
@@ -600,16 +649,19 @@ function toggleExplode() {
   kick();
 }
 
-const FRACTION_TEXT = { "0.85": "0.85 (kit default)", "0.74": "0.74 (smaller)", "0.7": "0.70 (kit default)", "0.82": "0.82 (larger)" };
+const FRACTION_TEXT_EN = { "0.85": "0.85 (kit default)", "0.74": "0.74 (smaller)", "0.7": "0.70 (kit default)", "0.82": "0.82 (larger)" };
+const FRACTION_TEXT_ZH = { "0.85": "0.85 (默认推荐)", "0.74": "0.74 (较小池)", "0.7": "0.70 (默认推荐)", "0.82": "0.82 (较大池)" };
 function syncControls() {
   const c = state.config;
   $("#gm-gpu").value = c.gpu;
   $("#gm-dtype").value = c.dtype;
   const frac = $("#gm-frac");
-  const wanted = M.FRACTIONS[c.gpu].map((value) => `<option value="${value}">${FRACTION_TEXT[value]}</option>`).join("");
-  if (frac.dataset.gpu !== c.gpu) {
+  const fracMap = currentLang === "zh" ? FRACTION_TEXT_ZH : FRACTION_TEXT_EN;
+  const wanted = M.FRACTIONS[c.gpu].map((value) => `<option value="${value}">${fracMap[value] || value}</option>`).join("");
+  if (frac.dataset.gpu !== c.gpu || frac.dataset.lang !== currentLang) {
     frac.innerHTML = wanted;
     frac.dataset.gpu = c.gpu;
+    frac.dataset.lang = currentLang;
   }
   frac.value = c.frac;
   $("#gm-graphs").checked = c.graphs;
@@ -627,15 +679,21 @@ function syncControls() {
 function syncButtons() {
   if (state.sim) syncSteps();
   const run = $("[data-gm-run]");
-  run.textContent = state.playing ? "Pause" : state.done ? "Run again" : state.shown >= 0 ? "Resume" : "Run";
+  if (currentLang === "zh") {
+    run.textContent = state.playing ? "暂停" : state.done ? "重新运行" : state.shown >= 0 ? "继续" : "运行";
+    $("[data-gm-explode]").textContent = state.explode.target ? "组装还原" : "爆炸分解";
+  } else {
+    run.textContent = state.playing ? "Pause" : state.done ? "Run again" : state.shown >= 0 ? "Resume" : "Run";
+    $("[data-gm-explode]").textContent = state.explode.target ? "Assemble" : "Explode";
+  }
   run.setAttribute("aria-pressed", String(state.playing));
   $("[data-gm-explode]").setAttribute("aria-pressed", String(Boolean(state.explode.target)));
-  $("[data-gm-explode]").textContent = state.explode.target ? "Assemble" : "Explode";
 }
 function writeUrl() {
   const params = new URLSearchParams(M.encode(state.config));
   if (document.documentElement.classList.contains("iso-nolabels")) params.set("labels", "0");
   if (palette !== "green") params.set("pal", palette);
+  if (currentLang !== "en") params.set("lang", currentLang);
   const query = params.toString();
   const keep = /[?&]still\b/.test(location.search) ? (query ? "&still" : "still") : "";
   history.replaceState(null, "", location.pathname + (query || keep ? "?" + query + keep : "") + location.hash);
@@ -649,7 +707,30 @@ function flash(text) {
   flashTimer = setTimeout(() => delete node.dataset.on, 3200);
 }
 
-const ms = (value) => (value === null || value === undefined ? "not measured" : `${value.toLocaleString("en-US", { maximumFractionDigits: 2 })} ms`);
+function localizeBasis(basis) {
+  if (!basis) return "";
+  if (basis.includes("every weight, every step")) return "每步读取全部权重";
+  if (basis.includes("estimate: about 3 billion active parameters")) return "估算：每个 Token 约 30 亿激活参数";
+  if (basis.includes("not computed")) return "未计算：每个 Token 独立选取专家，每步读取字节数未予实测";
+  return basis;
+}
+function localizeOutcome(sim) {
+  if (currentLang !== "zh") return sim.outcome.text;
+  const { config, outcome } = sim;
+  const { status } = outcome;
+  const adm = sim.admission;
+  const pool = sim.pool;
+  const point = sim.point;
+  const parts = [];
+  if (status === "served") parts.push("无等待直接提供服务。");
+  if (adm.queued > 0) parts.push(`容量为 ${n(pool)} Token 的显存池可容纳 ${n(adm.fits)} 个请求，因此 ${n(adm.users)} 位用户中有 ${n(adm.queued)} 位需排队等待。`);
+  if (status === "recomputed") parts.push(config.radix ? "共享前缀超出了显存池容纳上限，因此每个请求都必须重新计算前缀。" : "由于禁用了 Radix 缓存，每个请求都必须重新计算共享前缀。");
+  if (config.clock === "hot") parts.push("加速卡温度过高，触发硬件降频保护。");
+  parts.push(point ? `实测：输出吞吐量 ${point.tokS.toLocaleString("en-US")} tok/s，首字延迟中位数 ${point.ttft.toLocaleString("en-US")} ms，单 Token 耗时中位数 ${point.tpot.toLocaleString("en-US")} ms。` : "当前配置未进行实测，因此页面仅显示理论数值而无实测速度。");
+  return parts.join(" ");
+}
+
+const ms = (value) => (value === null || value === undefined ? (currentLang === "zh" ? "未实测" : "not measured") : `${value.toLocaleString("en-US", { maximumFractionDigits: 2 })} ms`);
 function renderStatic() {
   const sim = state.sim;
   const c = sim.config;
@@ -657,30 +738,53 @@ function renderStatic() {
   const mem = sim.memory;
   const point = sim.point;
   $("[data-gm-model]").textContent = `${D.machine[c.gpu].model} · ${c.dtype.toUpperCase()} · ${D.specs[c.gpu].name}`;
-  const work = c.workload === "unique" ? `${n(c.users)} user${c.users === 1 ? "" : "s"}, 512 tokens in, 128 out` : `8 users, 4 groups, a ${n(c.shared)}-token shared system prompt, 128-token question, 64 out`;
+  const work = currentLang === "zh"
+    ? (c.workload === "unique" ? `${n(c.users)} 位并发用户，512 输入 Token，128 输出 Token` : `8 位用户，4 组并发，${n(c.shared)} Token 共享系统提示词，128 Token 提问，64 输出 Token`)
+    : (c.workload === "unique" ? `${n(c.users)} user${c.users === 1 ? "" : "s"}, 512 tokens in, 128 out` : `8 users, 4 groups, a ${n(c.shared)}-token shared system prompt, 128-token question, 64 out`);
   $("[data-gm-work]").textContent = work;
   const read = dec.readGB === null ? "the experts that the batch picks" : D.dense[c.gpu] ? `${dec.readGB.toLocaleString("en-US")} GB` : `about ${dec.readGB.toLocaleString("en-US")} GB (an estimate from about 3 billion active parameters)`;
-  $("[data-step-text]").innerHTML = dec.floorMs !== null && dec.tpot
-    ? `One decode step: <strong>${ms(dec.tpot)}</strong> measured. Reading ${read} at the peak ${dec.bandwidth} GB/s takes at least <strong>${ms(dec.floorMs)}</strong>, so the weight read is <strong>${Math.round(dec.share * 100)}%</strong> of the step.${sim.launch ? ` Without CUDA graphs the step was ${sim.launch.delta >= 0 ? `${ms(sim.launch.delta)} longer` : `${ms(-sim.launch.delta)} shorter`}.` : ""}`
-    : dec.tpot
-      ? `One decode step: <strong>${ms(dec.tpot)}</strong> measured. ${escapeHtml(dec.basis[0].toUpperCase() + dec.basis.slice(1))}.`
-      : `This setting was not measured, so the page shows no step time. ${escapeHtml(dec.basis[0].toUpperCase() + dec.basis.slice(1))}.`;
+  const readZh = dec.readGB === null ? "批次激活的专家权重" : D.dense[c.gpu] ? `${dec.readGB.toLocaleString("en-US")} GB` : `约 ${dec.readGB.toLocaleString("en-US")} GB (由约 30 亿激活参数估算)`;
+  if (currentLang === "zh") {
+    $("[data-step-text]").innerHTML = dec.floorMs !== null && dec.tpot
+      ? `单个 Decode 步骤：实测 <strong>${ms(dec.tpot)}</strong>。以 ${dec.bandwidth} GB/s 显存峰值带宽读取 ${readZh} 至少需耗时 <strong>${ms(dec.floorMs)}</strong>，因此读取权重占单步耗时的 <strong>${Math.round(dec.share * 100)}%</strong>。${sim.launch ? ` 未开启 CUDA Graphs 时每步耗时${sim.launch.delta >= 0 ? `增加 ${ms(sim.launch.delta)}` : `减少 ${ms(-sim.launch.delta)}`}。` : ""}`
+      : dec.tpot
+        ? `单个 Decode 步骤：实测 <strong>${ms(dec.tpot)}</strong>。${escapeHtml(localizeBasis(dec.basis))}。`
+        : `当前配置未进行实测，因此未显示单步耗时。${escapeHtml(localizeBasis(dec.basis))}。`;
+  } else {
+    $("[data-step-text]").innerHTML = dec.floorMs !== null && dec.tpot
+      ? `One decode step: <strong>${ms(dec.tpot)}</strong> measured. Reading ${read} at the peak ${dec.bandwidth} GB/s takes at least <strong>${ms(dec.floorMs)}</strong>, so the weight read is <strong>${Math.round(dec.share * 100)}%</strong> of the step.${sim.launch ? ` Without CUDA graphs the step was ${sim.launch.delta >= 0 ? `${ms(sim.launch.delta)} longer` : `${ms(-sim.launch.delta)} shorter`}.` : ""}`
+      : dec.tpot
+        ? `One decode step: <strong>${ms(dec.tpot)}</strong> measured. ${escapeHtml(dec.basis[0].toUpperCase() + dec.basis.slice(1))}.`
+        : `This setting was not measured, so the page shows no step time. ${escapeHtml(dec.basis[0].toUpperCase() + dec.basis.slice(1))}.`;
+  }
   $("[data-step-read]").style.width = dec.share !== null ? `${(dec.share * 100).toFixed(1)}%` : "0%";
   $("[data-step-rest]").style.width = dec.share !== null ? `${((1 - dec.share) * 100).toFixed(1)}%` : dec.tpot ? "100%" : "0%";
-  $("[data-gauge-peak]").textContent = `of ${dec.bandwidth} GB/s peak`;
+  $("[data-gauge-peak]").textContent = currentLang === "zh" ? `峰值 ${dec.bandwidth} GB/s` : `of ${dec.bandwidth} GB/s peak`;
   const tpc = sim.pool / mem.kvCells;
-  $("[data-gm-memory]").innerHTML = [
-    ["w", "Weights", `${mem.weightsGiB} GB`, `${mem.weightCells} cells`],
-    ["kv", "KV pool", `${mem.kvGiB} GB, ${n(sim.pool)} tokens`, `${mem.kvCells} cells, about ${n(tpc)} tokens each`],
-    ["rest", "Runtime, graphs and free", `${mem.restGiB} GB`, `${mem.restCells} cells`],
-  ].map(([k, name, size, cells]) => `<li><i class="gm-key" data-c="${k}"></i><span><strong>${name}</strong> ${escapeHtml(size)}</span><span>${escapeHtml(cells)}</span></li>`).join("");
-  $("[data-gm-memory-note]").textContent = `${mem.totalGiB} GB of memory as the driver reports it, drawn as ${mem.cells} cells over ${D.rigs[c.gpu].CHIPS} packages. Every package holds a slice of every region, because the memory controllers interleave addresses across the channels. Sizes are from the startup logs; the GB unit is the one SGLang prints.`;
+  const memRows = currentLang === "zh"
+    ? [
+        ["w", "模型权重", `${mem.weightsGiB} GB`, `${mem.weightCells} 个单元`],
+        ["kv", "KV 缓存池", `${mem.kvGiB} GB，${n(sim.pool)} Token`, `${mem.kvCells} 个单元，每单元约 ${n(tpc)} Token`],
+        ["rest", "运行时、Graphs 与空闲", `${mem.restGiB} GB`, `${mem.restCells} 个单元`],
+      ]
+    : [
+        ["w", "Weights", `${mem.weightsGiB} GB`, `${mem.weightCells} cells`],
+        ["kv", "KV pool", `${mem.kvGiB} GB, ${n(sim.pool)} tokens`, `${mem.kvCells} cells, about ${n(tpc)} tokens each`],
+        ["rest", "Runtime, graphs and free", `${mem.restGiB} GB`, `${mem.restCells} cells`],
+      ];
+  $("[data-gm-memory]").innerHTML = memRows.map(([k, name, size, cells]) => `<li><i class="gm-key" data-c="${k}"></i><span><strong>${name}</strong> ${escapeHtml(size)}</span><span>${escapeHtml(cells)}</span></li>`).join("");
+  $("[data-gm-memory-note]").textContent = currentLang === "zh"
+    ? `驱动报告的显存总量为 ${mem.totalGiB} GB，在 ${D.rigs[c.gpu].CHIPS} 颗芯片封装上绘制为 ${mem.cells} 个单元。每个封装芯片都持有所有显存区域的一部分切片，因为显存控制器在所有通道之间对地址进行交错编址。容量数值来自 SGLang 启动日志；GB 单位与 SGLang 输出保持一致。`
+    : `${mem.totalGiB} GB of memory as the driver reports it, drawn as ${mem.cells} cells over ${D.rigs[c.gpu].CHIPS} packages. Every package holds a slice of every region, because the memory controllers interleave addresses across the channels. Sizes are from the startup logs; the GB unit is the one SGLang prints.`;
   const outcome = sim.outcome;
-  $("[data-gm-outcome]").textContent = outcome.text;
+  $("[data-gm-outcome]").textContent = localizeOutcome(sim);
   const status = $("[data-gm-status]");
-  status.textContent = outcome.status;
+  const statusZh = { served: "正常服务", queued: "排队等待", recomputed: "重算前缀", throttled: "过热降频" }[outcome.status] || outcome.status;
+  status.textContent = currentLang === "zh" ? statusZh : outcome.status;
   status.dataset.status = outcome.status;
-  $("[data-gm-measured]").textContent = point ? `Measured run: ${sim.run.set === "l4-hot" ? "the hot L4 sweep" : sim.run.set === "l4" ? "the cooled L4 sweep" : "the GB10 sweep"}, ${sim.run.key}, three seeds, median shown.` : "No run matches this setting. The pool and the arithmetic still come from the logs.";
+  $("[data-gm-measured]").textContent = currentLang === "zh"
+    ? (point ? `实测运行：${sim.run.set === "l4-hot" ? "L4 过热测试组" : sim.run.set === "l4" ? "L4 正常测试组" : "GB10 测试组"}，${sim.run.key}，三次运行取中位数。` : "无完全匹配此配置的实测运行。缓存池大小与理论参数仍基于真实日志。")
+    : (point ? `Measured run: ${sim.run.set === "l4-hot" ? "the hot L4 sweep" : sim.run.set === "l4" ? "the cooled L4 sweep" : "the GB10 sweep"}, ${sim.run.key}, three seeds, median shown.` : "No run matches this setting. The pool and the arithmetic still come from the logs.");
 }
 
 const stepButtons = $$("[data-gm-stepbtn]");
@@ -712,8 +816,8 @@ function syncSteps() {
   const current = active >= 0 ? active : next >= 0 ? next : M.STEPS.length - 1;
   const step = M.STEPS[current];
   const shown = state.shown;
-  $("[data-gm-hint]").textContent = `${current + 1}. ${step.hint}`;
-  $("[data-gm-badge]").textContent = state.done ? "done" : shown >= 0 ? badgeOf(state.timing[shown]) : "ready";
+  $("[data-gm-hint]").textContent = currentLang === "zh" ? I18n.ZH_STEP_HINTS[current] : `${current + 1}. ${step.hint}`;
+  $("[data-gm-badge]").textContent = state.done ? (currentLang === "zh" ? "完成" : "done") : shown >= 0 ? (currentLang === "zh" && !state.timing[shown] ? "未计时" : badgeOf(state.timing[shown])) : (currentLang === "zh" ? "就绪" : "ready");
   $$("[data-gm-mode]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.gmMode === mode)));
 }
 function playStep(index) {
@@ -743,26 +847,135 @@ $("[data-gm-restart]").addEventListener("click", (event) => {
   mode === "auto" ? play() : syncSteps();
 });
 
+function localizeEventType(type) {
+  const map = {
+    arrive: "到达",
+    tokenize: "分词",
+    match: "前缀匹配",
+    queue: "排队",
+    admit: "准入",
+    send: "总线传输",
+    reuse: "复用前缀",
+    prefill: "Prefill 预填充",
+    first: "首个 Token",
+    decode: "Decode 解码",
+    "decode-rest": "后续 Decode",
+    detok: "反分词",
+    exit: "退出",
+  };
+  return map[type] || type;
+}
+
+function localizeTrace(item) {
+  const sim = state.sim;
+  if (!sim) return item.trace;
+  const { config, admission: adm, pool, point, decode: dec } = sim;
+  const m = D.machine[config.gpu];
+  const shared = config.workload === "shared";
+  const SHOWN_STEPS = 3;
+
+  switch (item.type) {
+    case "arrive":
+      return config.gpu === "l4"
+        ? "请求通过网络到达主机 CPU"
+        : "请求通过网络到达 CPU 芯粒";
+    case "tokenize":
+      return shared
+        ? `分词器将文本转换为 ${n(adm.input)} 个 Token ID：${n(config.shared)} 个系统提示词 Token 与 128 个问题 Token`
+        : `分词器将文本转换为 ${n(adm.input)} 个 Token ID`;
+    case "match":
+      if (!config.radix) {
+        return "Radix 缓存已禁用，调度器无法命中前缀：整个提示词需重新计算";
+      } else if (adm.prefixFits) {
+        return `Radix 树在 ${n(adm.input)} 个 Token 中命中了 ${n(adm.matched)} 个：4 个系统提示词 (${n(adm.prefix)} Token) 保留在池中`;
+      } else {
+        return `4 个系统提示词需 ${n(adm.prefix)} Token，运行中请求需 ${n(8 * (128 + 64))} Token，超出容量 ${n(pool)} Token 的显存池，前缀被迫淘汰：命中 0 个 Token`;
+      }
+    case "queue":
+      return `显存池仅可容纳 ${n(adm.fits)} 个 ${n(adm.need)} Token 的请求，因此 ${n(adm.running)} 个请求正在运行，${n(adm.queued)} 个请求排队：当前请求等待空闲插槽`;
+    case "admit":
+      return `准入执行：预留 ${n(adm.need)} 个 Token，显存池已使用 ${n(item.poolUsed)} / ${n(pool)} Token (${Math.round((item.poolUsed / pool) * 100)}%)，${n(adm.running)} 个请求运行中`;
+    case "send":
+      return config.gpu === "l4"
+        ? `${n(adm.input)} 个 Token ID 经由 ${m.link} 从主机传输到 GPU`
+        : `Token ID 保留在共享的 LPDDR5X 统一内存中：GPU 芯粒通过 ${m.link} 直接读取`;
+    case "reuse":
+      return `${n(adm.matched)} 个前缀 Token 已存在于显存池中：SM 张量核心无需重复计算`;
+    case "prefill":
+      return item.chunks && item.chunks > 1
+        ? `Prefill 预填充分块 ${item.index} / ${item.chunks}：${n(item.size)} 个 Token 流经张量核心；其 Key 和 Value 写入缓存池`
+        : `Prefill 预填充：${n(item.size)} 个 Token 流经张量核心；其 Key 和 Value 写入缓存池`;
+    case "first":
+      return point
+        ? `最后一次 Prefill 传递生成首个 Token，首字延迟 ${ms(point.ttft)}（中位数，实测）`
+        : `最后一次 Prefill 传递生成首个 Token；当前配置未进行实测`;
+    case "decode": {
+      const readZh = dec.readGB === null
+        ? "批次激活的专家权重"
+        : D.dense[config.gpu]
+          ? `${dec.readGB.toLocaleString("en-US")} GB`
+          : `约 ${dec.readGB.toLocaleString("en-US")} GB (估算)`;
+      const tailZh = point ? `单步耗时 ${ms(point.tpot)}（中位数，实测）` : "未实测";
+      return `Decode 步骤 ${item.step}：SM 通过 L2 读取 ${readZh}，为每个运行中请求生成 ${n(dec.tokensPerStep)} 个 Token；${tailZh}`;
+    }
+    case "decode-rest": {
+      const more = adm.output - 1 - SHOWN_STEPS;
+      return `Decode 步骤 ${SHOWN_STEPS + 1} 至 ${adm.output - 1}：${D.dense[config.gpu] ? "完全相同的权重读取" : "相同类型的解码步骤"}重复执行 ${more} 次`;
+    }
+    case "detok":
+      return `反分词器将 ${n(adm.output)} 个 Token ID 转换回文本并流式推送返回`;
+    case "exit": {
+      const statusZh = { served: "正常完成", queued: "排队等待", recomputed: "重算前缀", throttled: "过热降频" }[item.outcome.status] || item.outcome.status;
+      return `退出：${statusZh}${point ? `，针对 ${adm.users === 1 ? "单个用户" : `全部 ${n(adm.users)} 位用户`} 的输出吞吐为 ${point.tokS.toLocaleString("en-US")} tok/s` : "，未实测"}`;
+    }
+    default:
+      return item.trace;
+  }
+}
+
 function render(index) {
   const sim = state.sim;
   const ev = index < 0 ? null : sim.events[index];
   const c = sim.config;
   const point = sim.point;
   const corner = document.querySelector("[data-readout]");
-  if (corner) corner.textContent = ev ? `step ${ev.index + 1} of ${sim.events.length} · ${ev.type}` : `ready · ${sim.events.length} steps`;
-  $("[data-gm-stage-name]").textContent = ev ? `${pick(C.NAMES[ev.station], c.gpu) || ev.station} · ${ev.trace}` : "Ready · press Run";
+  if (corner) {
+    if (currentLang === "zh") {
+      corner.textContent = ev ? `步骤 ${ev.index + 1} / ${sim.events.length} · ${localizeEventType(ev.type)}` : `就绪 · 共 ${sim.events.length} 步`;
+    } else {
+      corner.textContent = ev ? `step ${ev.index + 1} of ${sim.events.length} · ${ev.type}` : `ready · ${sim.events.length} steps`;
+    }
+  }
+  const names = currentLang === "zh" ? I18n.ZH_NAMES : C.NAMES;
+  const stationName = ev ? (pick(names[ev.station], c.gpu) || ev.station) : "";
+  $("[data-gm-stage-name]").textContent = ev ? `${stationName} · ${currentLang === "zh" ? localizeTrace(ev) : ev.trace}` : (currentLang === "zh" ? "就绪 · 点击运行" : "Ready · press Run");
   const sv = sim.serve;
   const used = ev ? ev.poolUsed : 0;
-  $("[data-gm-pool]").textContent = `${n(used)} of ${n(sv.kvPagesTotal)} tokens · ${Math.round((used / sv.kvPagesTotal) * 100)}%`;
-  $("[data-gm-running]").textContent = `${n(sv.running)} running · ${n(sv.waiting)} held back`;
-  $("[data-gm-tps]").textContent = `${n(sv.tokensPerStep)} per step`;
-  $("[data-gm-share]").textContent = sv.weightReadShare !== null ? `${Math.round(sv.weightReadShare * 100)}% of the step` : "not computed";
-  $("[data-gm-tpot]").textContent = ms(sv.stepMs);
-  $("[data-gm-toks]").textContent = sv.tokS !== null ? `${sv.tokS.toLocaleString("en-US")} tok/s` : "not measured";
-  $("[data-gm-ttft]").textContent = ms(sv.firstTokenMs);
-  $("[data-gm-clock]").textContent = point && point.smMhz ? `${n(point.smMhz)} MHz SM · ${point.maxTemp} C` : c.clock === "hot" ? "360 MHz SM · 87 C (nvidia-smi)" : "not recorded";
+  if (currentLang === "zh") {
+    $("[data-gm-pool]").textContent = `${n(used)} / ${n(sv.kvPagesTotal)} Token · ${Math.round((used / sv.kvPagesTotal) * 100)}%`;
+    $("[data-gm-running]").textContent = `${n(sv.running)} 运行中 · ${n(sv.waiting)} 排队等待`;
+    $("[data-gm-tps]").textContent = `每步 ${n(sv.tokensPerStep)} Token`;
+    $("[data-gm-share]").textContent = sv.weightReadShare !== null ? `占单步耗时 ${Math.round(sv.weightReadShare * 100)}%` : "未计算";
+    $("[data-gm-tpot]").textContent = ms(sv.stepMs);
+    $("[data-gm-toks]").textContent = sv.tokS !== null ? `${sv.tokS.toLocaleString("en-US")} tok/s` : "未实测";
+    $("[data-gm-ttft]").textContent = ms(sv.firstTokenMs);
+    $("[data-gm-clock]").textContent = point && point.smMhz ? `${n(point.smMhz)} MHz SM · ${point.maxTemp} ℃` : c.clock === "hot" ? "360 MHz SM · 87 ℃ (nvidia-smi)" : "未记录";
+  } else {
+    $("[data-gm-pool]").textContent = `${n(used)} of ${n(sv.kvPagesTotal)} tokens · ${Math.round((used / sv.kvPagesTotal) * 100)}%`;
+    $("[data-gm-running]").textContent = `${n(sv.running)} running · ${n(sv.waiting)} held back`;
+    $("[data-gm-tps]").textContent = `${n(sv.tokensPerStep)} per step`;
+    $("[data-gm-share]").textContent = sv.weightReadShare !== null ? `${Math.round(sv.weightReadShare * 100)}% of the step` : "not computed";
+    $("[data-gm-tpot]").textContent = ms(sv.stepMs);
+    $("[data-gm-toks]").textContent = sv.tokS !== null ? `${sv.tokS.toLocaleString("en-US")} tok/s` : "not measured";
+    $("[data-gm-ttft]").textContent = ms(sv.firstTokenMs);
+    $("[data-gm-clock]").textContent = point && point.smMhz ? `${n(point.smMhz)} MHz SM · ${point.maxTemp} C` : c.clock === "hot" ? "360 MHz SM · 87 C (nvidia-smi)" : "not recorded";
+  }
   const list = $("[data-gm-trace]");
-  list.innerHTML = sim.events.slice(0, index + 1).map((item) => `<li data-type="${item.type}"><span class="gm-n">${String(item.index + 1).padStart(2, "0")}</span><span class="gm-t">${item.type}</span><span class="gm-d">${escapeHtml(item.trace)}${item.clock !== null && item.clock !== undefined ? ` <em>at ${n(item.clock)} ms</em>` : ""}</span></li>`).join("");
+  list.innerHTML = sim.events.slice(0, index + 1).map((item) => {
+    const traceText = currentLang === "zh" ? localizeTrace(item) : item.trace;
+    const atText = currentLang === "zh" ? "耗时" : "at";
+    return `<li data-type="${item.type}"><span class="gm-n">${String(item.index + 1).padStart(2, "0")}</span><span class="gm-t">${item.type}</span><span class="gm-d">${escapeHtml(traceText)}${item.clock !== null && item.clock !== undefined ? ` <em>${atText} ${n(item.clock)} ms</em>` : ""}</span></li>`;
+  }).join("");
   list.scrollTop = list.scrollHeight;
   syncSteps();
 }
@@ -798,7 +1011,7 @@ $("[data-gm-copy]").addEventListener("click", async () => {
   const url = location.href.replace(/([?&])still\b&?/, "$1").replace(/[?&]$/, "");
   try {
     await navigator.clipboard.writeText(url);
-    flash("Link copied. It opens with these switches set.");
+    flash(currentLang === "zh" ? "链接已复制，打开即为此配置。" : "Link copied. It opens with these switches set.");
   } catch (error) {
     flash(url);
   }
@@ -829,14 +1042,18 @@ function inspect(part) {
   state.selected = part;
   const panel = $("[data-gm-inspect]");
   const gpu = state.config.gpu;
-  const info = part ? C.INFO[part] : null;
+  const info = part ? (currentLang === "zh" ? I18n.ZH_INFO[part] : C.INFO[part]) : null;
+  const names = currentLang === "zh" ? I18n.ZH_NAMES : C.NAMES;
   $$("[data-gm-part]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.gmPart === part)));
   if (!info) {
-    panel.innerHTML = `<p class="gm-muted">Select a part of the machine, or pick one from the list, to see what it does for one request.</p>`;
+    panel.innerHTML = `<p class="gm-muted">${currentLang === "zh" ? I18n.ZH_UI.inspectEmpty : "Select a part of the machine, or pick one from the list, to see what it does for one request."}</p>`;
     kick();
     return;
   }
-  panel.innerHTML = `<p class="gm-label">${escapeHtml(pick(C.NAMES[part], gpu))}</p><h3>${escapeHtml(pick(info.name, gpu))}</h3><p class="gm-kicker">${escapeHtml(pick(info.is, gpu))}</p><dl><dt>What it does</dt><dd>${escapeHtml(pick(info.does, gpu))}</dd><dt>Why it matters</dt><dd>${escapeHtml(pick(info.why, gpu))}</dd><dt>Without it</dt><dd>${escapeHtml(pick(info.without, gpu))}</dd></dl><a class="gm-lesson" href="${info.lesson.href}">${escapeHtml(info.lesson.title)} →</a>`;
+  const whatItDoes = currentLang === "zh" ? "功能职责" : "What it does";
+  const whyItMatters = currentLang === "zh" ? "关键意义" : "Why it matters";
+  const withoutIt = currentLang === "zh" ? "如果缺少" : "Without it";
+  panel.innerHTML = `<p class="gm-label">${escapeHtml(pick(names[part], gpu))}</p><h3>${escapeHtml(pick(info.name, gpu))}</h3><p class="gm-kicker">${escapeHtml(pick(info.is, gpu))}</p><dl><dt>${whatItDoes}</dt><dd>${escapeHtml(pick(info.does, gpu))}</dd><dt>${whyItMatters}</dt><dd>${escapeHtml(pick(info.why, gpu))}</dd><dt>${withoutIt}</dt><dd>${escapeHtml(pick(info.without, gpu))}</dd></dl><a class="gm-lesson" href="${info.lesson.href}">${escapeHtml(info.lesson.title)} →</a>`;
   kick();
 }
 $$("[data-gm-part]").forEach((button) => button.addEventListener("click", () => inspect(state.selected === button.dataset.gmPart ? null : button.dataset.gmPart)));
@@ -897,6 +1114,292 @@ function setLabels(on) {
 $("#gm-labels").addEventListener("change", (event) => setLabels(event.target.checked));
 if (query.get("labels") === "0") document.documentElement.classList.add("iso-nolabels"), ($("#gm-labels").checked = false);
 
+function renderSpecs() {
+  const panel = $("#gm-panel-specs");
+  if (!panel) return;
+  const s_l4 = Hw.SPECS.l4;
+  const s_gb10 = Hw.SPECS.gb10;
+  const DOCS_EN = { l4Page: "NVIDIA L4 product page", l4Brief: "NVIDIA L4 product brief PB-11316-001", ada: "NVIDIA Ada GPU architecture whitepaper", sparkPage: "NVIDIA DGX Spark product page", sparkGuide: "NVIDIA DGX Spark user guide", gb10HotChips: "NVIDIA GB10 talk, Hot Chips 2025" };
+  const docs = currentLang === "zh" ? I18n.ZH_DOCS : DOCS_EN;
+
+  const specRows = (gpu) => {
+    const s = gpu === "l4" ? s_l4 : s_gb10;
+    const labels = currentLang === "zh" ? I18n.ZH_SPECS_LABELS[gpu] : null;
+    let rows;
+    if (gpu === "l4") {
+      rows = currentLang === "zh"
+        ? [
+            [labels["Die"], s.architecture],
+            [labels["SMs"], s.sms, `${s.gpcs.value} GPC，${s.tpcs.value} TPC`],
+            [labels["Tensor Cores"], s.tensorCores, `每 SM 4 个，${s.tensorGen.value}`],
+            [labels["L2 cache"], s.l2MB, "MB"],
+            [labels["Memory"], s.memory],
+            [labels["Bus"], s.busBits, "位，32 位控制器"],
+            [labels["Bandwidth"], s.bandwidthGBs, "GB/s 峰值"],
+            [labels["Host link"], s.interconnect],
+            [labels["Power"], s.tdpW, "W，被动散热"],
+            [labels["Clocks"], s.clocksMHz, "MHz"],
+          ]
+        : [
+            ["Die", s.architecture],
+            ["SMs", s.sms, `${s.gpcs.value} GPCs, ${s.tpcs.value} TPCs`],
+            ["Tensor Cores", s.tensorCores, `4 per SM, ${s.tensorGen.value}`],
+            ["L2 cache", s.l2MB, "MB"],
+            ["Memory", s.memory],
+            ["Bus", s.busBits, "bits, 32-bit controllers"],
+            ["Bandwidth", s.bandwidthGBs, "GB/s peak"],
+            ["Host link", s.interconnect],
+            ["Power", s.tdpW, "W, passive cooling"],
+            ["Clocks", s.clocksMHz, "MHz"],
+          ];
+    } else {
+      rows = currentLang === "zh"
+        ? [
+            [labels["Chip"], s.architecture],
+            [labels["CPU"], s.cpu],
+            [labels["GPU"], s.cudaCores, `CUDA 核心，${s.tensorGen.value} Tensor Core；SM 数量未公布`],
+            [labels["GPU L2"], s.l2MB, "MB"],
+            [labels["CPU caches"], s.cpuL3MB, `MB L3，外加 ${s.slcMB.value} MB 系统级缓存`],
+            [labels["Memory"], s.memory],
+            [labels["Bus"], s.busBits, `位，${s.channels.value} 个通道`],
+            [labels["Bandwidth"], s.bandwidthGBs, "GB/s 峰值"],
+            [labels["Chip link"], s.interconnect, `GPU 独享带宽 ${s.c2cGBs.value} GB/s`],
+            [labels["Power"], s.tdpW, "W 芯片总功耗"],
+          ]
+        : [
+            ["Chip", s.architecture],
+            ["CPU", s.cpu],
+            ["GPU", s.cudaCores, `CUDA cores, ${s.tensorGen.value} Tensor Cores; SM count not published`],
+            ["GPU L2", s.l2MB, "MB"],
+            ["CPU caches", s.cpuL3MB, `MB L3, plus a ${s.slcMB.value} MB system level cache`],
+            ["Memory", s.memory],
+            ["Bus", s.busBits, `bits, ${s.channels.value} channels`],
+            ["Bandwidth", s.bandwidthGBs, "GB/s peak"],
+            ["Chip link", s.interconnect, `${s.c2cGBs.value} GB/s for the GPU`],
+            ["Power", s.tdpW, "W for the chip"],
+          ];
+    }
+    return rows.map(([label, entry, unit]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(entry.value).toLocaleString("en-US"))}${unit ? ` ${escapeHtml(unit)}` : ""}<small>${escapeHtml(docs[entry.source])}, ${escapeHtml(entry.where)}</small></dd>`).join("");
+  };
+
+  const abstract = (gpu) => {
+    const list = currentLang === "zh" ? I18n.ZH_ABSTRACT[gpu] : Hw.ABSTRACT[gpu];
+    return list.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+  };
+
+  const sourceLine = currentLang === "zh"
+    ? I18n.ZH_UI.sourceLine
+    : "Hardware sources: the NVIDIA L4 product page and product brief, the NVIDIA Ada GPU architecture whitepaper, the NVIDIA DGX Spark product page and user guide, and the NVIDIA GB10 talk at Hot Chips 2025.";
+
+  panel.innerHTML = `
+    <p class="gm-label">NVIDIA L4</p>
+    <dl class="gm-specs">${specRows("l4")}</dl>
+    <ul class="gm-abstract">${abstract("l4")}</ul>
+    <p class="gm-label">NVIDIA GB10</p>
+    <dl class="gm-specs">${specRows("gb10")}</dl>
+    <ul class="gm-abstract">${abstract("gb10")}</ul>
+    <p class="gm-source-line" data-gm-source-line>${escapeHtml(sourceLine)}</p>
+  `;
+}
+
+function applyLanguage() {
+  document.documentElement.lang = currentLang;
+  document.documentElement.dir = "ltr";
+
+  const isZh = currentLang === "zh";
+
+  const titleCorner = document.querySelector('[data-corner="title"]');
+  if (titleCorner) titleCorner.textContent = isZh ? I18n.ZH_UI.plateTitle : "Inside an LLM serving GPU";
+  const hintCorner = document.querySelector('[data-corner="hint"]');
+  if (hintCorner) hintCorner.textContent = isZh ? I18n.ZH_UI.hint : "click a part · space runs · → steps";
+
+  const eyebrow = $("[data-gm-eyebrow]");
+  if (eyebrow) eyebrow.textContent = isZh ? I18n.ZH_UI.eyebrow : "FIG_GPU · An interactive simulation";
+  const title = $("[data-gm-title]");
+  if (title) title.textContent = isZh ? I18n.ZH_UI.title : "Inside an LLM serving GPU";
+  document.title = isZh ? "Inside an LLM Serving GPU · 大模型推理 GPU 深度解析" : "Inside an LLM serving GPU";
+  const hook = $("[data-gm-hook]");
+  if (hook) {
+    hook.innerHTML = isZh
+      ? `${escapeHtml(I18n.ZH_UI.hook)} <span class="gm-sub" data-gm-sub>${escapeHtml(I18n.ZH_UI.sub)}</span>`
+      : "Decode reads every weight for every token. Watch the bytes leave the memory chips, and see why memory bandwidth sets the pace. <span class=\"gm-sub\" data-gm-sub>L4 or GB10. BF16 or FP8. Fill the pool. Break the cooling.</span>";
+  }
+
+  const stepBtn = $("[data-gm-step]");
+  if (stepBtn) stepBtn.textContent = isZh ? I18n.ZH_UI.stepBtn : "Step";
+  const breakBtn = $("[data-gm-break]");
+  if (breakBtn) breakBtn.textContent = isZh ? I18n.ZH_UI.breakBtn : "Break";
+  const repairBtn = $("[data-gm-repair]");
+  if (repairBtn) repairBtn.textContent = isZh ? I18n.ZH_UI.repairBtn : "Repair";
+  const resetBtn = $("[data-gm-reset]");
+  if (resetBtn) resetBtn.textContent = isZh ? I18n.ZH_UI.resetBtn : "Reset";
+  const copyBtn = $("[data-gm-copy]");
+  if (copyBtn) copyBtn.textContent = isZh ? I18n.ZH_UI.copyLinkBtn : "Copy link to this setup";
+  const poster = document.querySelector(".gm-poster");
+  if (poster) poster.textContent = isZh ? I18n.ZH_UI.downloadPoster : "Download poster";
+  const speedLabel = $("[data-gm-speed-label]");
+  if (speedLabel) speedLabel.textContent = isZh ? I18n.ZH_UI.speedLabel : "Speed";
+  const restart = $("[data-gm-restart]");
+  if (restart) restart.textContent = isZh ? I18n.ZH_UI.startOver : "Start over";
+  const manualBtn = $("[data-gm-mode=\"manual\"]");
+  if (manualBtn) manualBtn.textContent = isZh ? I18n.ZH_UI.manualMode : "Manual";
+  const autoBtn = $("[data-gm-mode=\"auto\"]");
+  if (autoBtn) autoBtn.textContent = isZh ? I18n.ZH_UI.autoMode : "Auto";
+
+  const switchMap = {
+    gpu: "GPU",
+    dtype: isZh ? I18n.ZH_UI.weightsLabel : "Weights",
+    frac: isZh ? I18n.ZH_UI.fracLabel : "Memory fraction",
+    workload: isZh ? I18n.ZH_UI.workloadLabel : "Workload",
+    users: isZh ? I18n.ZH_UI.usersLabel : "Users",
+    shared: isZh ? I18n.ZH_UI.sharedTokensLabel : "Shared tokens",
+    graphs: isZh ? I18n.ZH_UI.cudaGraphsLabel : "CUDA graphs",
+    radix: isZh ? I18n.ZH_UI.radixCacheLabel : "Radix cache",
+    clock: isZh ? I18n.ZH_UI.hotCardLabel : "Hot card",
+  };
+  for (const [key, text] of Object.entries(switchMap)) {
+    const el = $(`[data-gm-switch="${key}"]`);
+    if (el) el.textContent = text;
+  }
+  const workloadSel = $("#gm-workload");
+  if (workloadSel && workloadSel.options.length >= 2) {
+    workloadSel.options[0].textContent = isZh ? "独立提示词" : "Unique prompts";
+    workloadSel.options[1].textContent = isZh ? "共享系统提示词" : "Shared system prompt";
+  }
+
+  for (let i = 0; i < M.STEPS.length; i++) {
+    const el = $(`[data-step-name="${i}"]`);
+    if (el) el.textContent = isZh ? I18n.ZH_STEPS[i] : M.STEPS[i].name;
+  }
+
+  for (let i = 0; i < 11; i++) {
+    const btn = $(`[data-scenario-i="${i}"]`);
+    const sc = isZh ? I18n.ZH_SCENARIOS[i] : C.SCENARIOS[i];
+    if (btn && sc) {
+      btn.querySelector("strong").textContent = sc.label;
+      btn.querySelector("span").textContent = sc.note;
+    }
+  }
+
+  const brkTitle = $("[data-gm-break-title]");
+  if (brkTitle) brkTitle.textContent = isZh ? I18n.ZH_UI.breakTitle : "Try to break it";
+  const brkDesc = $("[data-gm-break-desc]");
+  if (brkDesc) brkDesc.textContent = isZh ? I18n.ZH_UI.breakDesc : "Each one sets the switches and runs one request again. Every number comes from a measured run.";
+  const wobbleLabel = $("[data-gm-look=\"wobble\"]");
+  if (wobbleLabel) wobbleLabel.textContent = isZh ? I18n.ZH_UI.wobbleLabel : "Hand-drawn wobble";
+  const boardLabel = $("[data-gm-look=\"board\"]");
+  if (boardLabel) boardLabel.textContent = isZh ? I18n.ZH_UI.boardLabel : "Board";
+  const labelsLabel = $("[data-gm-look=\"labels\"]");
+  if (labelsLabel) labelsLabel.textContent = isZh ? I18n.ZH_UI.labelsLabel : "Labels";
+
+  const idea = $("[data-gm-idea]");
+  if (idea) idea.innerHTML = isZh ? I18n.ZH_UI.bigIdea : "<strong>The big idea</strong>Memory, not math, sets the speed of decode, and the KV pool sets how many users fit.";
+  const nowLabel = $("[data-gm-now-label]");
+  if (nowLabel) nowLabel.textContent = isZh ? I18n.ZH_UI.nowLabel : "Now";
+
+  const roMap = {
+    pool: isZh ? I18n.ZH_UI.readouts.pool : "KV pool",
+    running: isZh ? I18n.ZH_UI.readouts.running : "Requests",
+    tps: isZh ? I18n.ZH_UI.readouts.tps : "Tokens per step",
+    share: isZh ? I18n.ZH_UI.readouts.share : "Weight read",
+    tpot: isZh ? I18n.ZH_UI.readouts.tpot : "Time per token",
+    ttft: isZh ? I18n.ZH_UI.readouts.ttft : "First token",
+    toks: isZh ? I18n.ZH_UI.readouts.toks : "Output",
+    clock: isZh ? I18n.ZH_UI.readouts.clock : "Clock",
+  };
+  for (const [key, text] of Object.entries(roMap)) {
+    const el = $(`[data-ro-label="${key}"]`);
+    if (el) el.textContent = text;
+  }
+
+  const tabMap = {
+    run: isZh ? I18n.ZH_UI.runTab : "Run",
+    memory: isZh ? I18n.ZH_UI.memoryTab : "Memory",
+    inspect: isZh ? I18n.ZH_UI.inspectTab : "Inspect",
+    trace: isZh ? I18n.ZH_UI.traceTab : "Trace",
+    specs: isZh ? I18n.ZH_UI.specsTab : "Specs",
+  };
+  for (const [key, text] of Object.entries(tabMap)) {
+    const el = $(`[data-gm-tab="${key}"]`);
+    if (el) el.textContent = text;
+  }
+
+  const mLabel = $('[data-run-label="machine"]');
+  if (mLabel) mLabel.textContent = isZh ? "机器" : "Machine";
+  const wLabel = $('[data-run-label="workload"]');
+  if (wLabel) wLabel.textContent = isZh ? "测试负载" : "Workload";
+  const oTitle = $('[data-run-outcome-title]');
+  if (oTitle) oTitle.textContent = isZh ? "执行结果" : "Outcome";
+  const honest = $('[data-gm-honest]');
+  if (honest) honest.textContent = isZh ? I18n.ZH_UI.simNote : "This is a simulation. The page does not run a model in your browser. The pool sizes, weight sizes, chunk sizes, step times, first-token times and throughputs are medians of three seeds from the SGLang 101 runs on one NVIDIA L4 and one NVIDIA GB10. The admission count and the weight-read share are arithmetic on those numbers and the published bandwidth. Where a setting was not measured, the page says so. The motion is paced for reading, not to scale.";
+
+  for (const [key, text] of Object.entries(isZh ? I18n.ZH_UI.memoryLegend : { w: "weights", r: "read this step", kv: "pool: other requests", me: "pool: this request", pre: "pool: reused prefix", free: "pool: free" })) {
+    const el = $(`[data-legend-key="${key}"]`);
+    if (el) el.textContent = text;
+  }
+
+  for (const part of C.PART_ORDER) {
+    const lbl = document.querySelector(`[data-part-label="${part}"]`);
+    if (lbl) {
+      lbl.textContent = isZh ? I18n.ZH_NAMES[part] : (typeof C.NAMES[part] === "string" ? C.NAMES[part] : C.NAMES[part].l4.replace("PCIE GEN4 X16", "LINK"));
+    }
+  }
+
+  const traceIntro = $('[data-gm-trace-intro]');
+  if (traceIntro) traceIntro.textContent = isZh ? I18n.ZH_UI.traceIntro : "One line for each step of the request.";
+
+  const whyTitle = $('[data-why="title"]');
+  if (whyTitle) whyTitle.textContent = isZh ? I18n.ZH_UI.whatShowsTitle : "What the machine shows";
+  const whyP1 = $('[data-why="p1"]');
+  if (whyP1) whyP1.innerHTML = isZh ? I18n.ZH_UI.p1 : "<strong>Decode is a memory read.</strong> On the L4, one decode step of Qwen3-8B in BF16 reads 16.41 GB of weights. At the peak 300 GB/s that takes 54.7 ms, and the measured step at one user took 60.16 ms. The SMs wait for the bytes.";
+  const whyP2 = $('[data-why="p2"]');
+  if (whyP2) whyP2.innerHTML = isZh ? I18n.ZH_UI.p2 : "<strong>Fewer bytes, faster steps.</strong> FP8 weights are 8.81 GB on the L4. The step at one user fell to 39.66 ms, and the freed memory grew the KV pool from 24,094 to 142,369 tokens. At 64 users the output went from 250.85 to 735.91 tok/s.";
+  const whyP3 = $('[data-why="p3"]');
+  if (whyP3) whyP3.innerHTML = isZh ? I18n.ZH_UI.p3 : "<strong>The pool decides who runs.</strong> The scheduler admits a request only when the pool has room. At 64 users the BF16 pool holds 37 requests and the rest wait. At a memory fraction of 0.74, four 2,048-token prefixes no longer fit, and the median first token took 12.6 s, against 0.47 s at 1,024 shared tokens.";
+  const whyP4 = $('[data-why="p4"]');
+  if (whyP4) whyP4.innerHTML = isZh ? I18n.ZH_UI.p4 : "<strong>Launch gaps are small.</strong> Without CUDA graphs, each kernel launch crosses from the host. On the L4 that added 0.47 ms to a 60 ms step at one user. Next to the weight read, the launch path barely matters.";
+  const whyCtaP = $('[data-why="cta-p"]');
+  if (whyCtaP) whyCtaP.textContent = isZh ? I18n.ZH_UI.ctaMeasure : "Measure it on your own GPU.";
+  const whyCtaManual = $('[data-why="cta-manual"]');
+  if (whyCtaManual) whyCtaManual.textContent = isZh ? I18n.ZH_UI.ctaManual : "Read the SGLang 101 manual";
+  const whyCtaQuant = $('[data-why="cta-quant"]');
+  if (whyCtaQuant) whyCtaQuant.textContent = isZh ? I18n.ZH_UI.ctaQuant : "Production quantization";
+
+  const gTitle = document.querySelector("[data-gauge] .gauge-title");
+  if (gTitle) gTitle.textContent = isZh ? I18n.ZH_UI.gauge.title : "MEMORY READ";
+  const cTitle = document.querySelector("[data-cut] .cut-title");
+  if (cTitle) cTitle.textContent = isZh ? I18n.ZH_UI.cut.title : "CUT WINDOW · INSIDE THE MEMORY";
+  const cCaps = document.querySelectorAll("[data-cut] .cut-cap");
+  if (cCaps.length >= 2) {
+    cCaps[0].textContent = isZh ? I18n.ZH_UI.cut.weights : "weights";
+    cCaps[1].textContent = isZh ? I18n.ZH_UI.cut.kvPool : "KV pool";
+  }
+
+  lastPills = "";
+  lastCut = "";
+  lastGauge = "";
+  lastDisplay = "";
+  for (const r of Object.values(RIGS)) r._phone = null;
+
+  syncControls();
+  syncButtons();
+  renderStatic();
+  render(state.shown);
+  renderSpecs();
+  inspect(state.selected);
+  draw();
+}
+
+function setLanguage(lang) {
+  const norm = (lang && String(lang).toLowerCase().startsWith("zh")) ? "zh" : "en";
+  if (norm === currentLang) return;
+  currentLang = norm;
+  applyLanguage();
+  writeUrl();
+}
+window.AIFS_onLangChange = setLanguage;
+document.addEventListener("aifs:lang", (e) => setLanguage(e.detail && e.detail.lang));
+
 window.__machine = {
   state,
   load,
@@ -907,6 +1410,9 @@ window.__machine = {
   repair,
   toggleExplode,
   inspect,
+  setLanguage,
+  applyLanguage,
+  getLanguage: () => currentLang,
   seek: (target) => {
     state.stopAt = target;
     state.playing = true;
@@ -938,6 +1444,7 @@ window.seek = (t) => {
   return { time: state.time, event: state.shown, total: state.beats.reduce((sum, beat) => sum + beat._dur, 0) };
 };
 load(state.config);
+if (currentLang === "zh") applyLanguage();
 let started = false;
 if (document.documentElement.hasAttribute("data-poster")) {
   started = true;

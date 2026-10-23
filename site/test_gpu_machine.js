@@ -177,3 +177,42 @@ test('the sglang-serving cheat sheet links to the machine', () => {
   assert.deepEqual(map.errors, []);
   assert.equal(map.topics.find((entry) => entry.id === 'sglang-serving').explainer, 'inside-an-llm-serving-gpu.html');
 });
+
+test('Chinese bilingual support covers every part, step, scenario and spec', async () => {
+  const { PART_ORDER, SCENARIOS } = await import(path.join(dir, 'content.mjs'));
+  const M = await load();
+  const {
+    ZH_NAMES,
+    ZH_LABELS,
+    ZH_INFO,
+    ZH_SCENARIOS,
+    ZH_STEPS,
+    ZH_STEP_HINTS,
+    ZH_BREAK_NOTES,
+    ZH_ABSTRACT,
+    ZH_SPECS_LABELS,
+    ZH_DOCS,
+    ZH_UI,
+  } = await import(path.join(dir, 'i18n.mjs'));
+
+  for (const part of PART_ORDER) {
+    assert.ok(ZH_INFO[part], `ZH_INFO missing part: ${part}`);
+    assert.ok(ZH_NAMES[part], `ZH_NAMES missing part: ${part}`);
+  }
+  assert.equal(ZH_SCENARIOS.length, SCENARIOS.length);
+  assert.equal(ZH_STEPS.length, M.STEPS.length);
+  assert.equal(ZH_STEP_HINTS.length, M.STEPS.length);
+  assert.equal(ZH_BREAK_NOTES.length, M.BREAKS.length);
+  assert.ok(ZH_LABELS.l4 && ZH_LABELS.gb10);
+  assert.ok(ZH_ABSTRACT.l4 && ZH_ABSTRACT.gb10);
+  assert.ok(ZH_SPECS_LABELS.l4 && ZH_SPECS_LABELS.gb10);
+  assert.ok(ZH_UI.title && ZH_UI.whatShowsTitle);
+
+  const html = fs.readFileSync(page, 'utf8');
+  assert.ok(html.includes('id="langPicker"'), 'missing #langPicker');
+  assert.ok(html.includes('lang-picker.js'), 'missing lang-picker.js');
+  assert.ok(html.includes('langs.js'), 'missing langs.js');
+  assert.ok(html.includes('data-part-label='), 'missing data-part-label');
+  assert.ok(html.includes('data-scenario-i='), 'missing data-scenario-i');
+  assert.ok(html.includes('data-why='), 'missing data-why');
+});

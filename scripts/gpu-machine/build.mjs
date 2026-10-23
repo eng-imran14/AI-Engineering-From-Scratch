@@ -93,6 +93,7 @@ const script = [
   module("../agent-machine/kit/ink.mjs", "Ink", [['import { iso, segment, slabOf, solidSvg } from "./iso-kit.mjs";', "const { iso, segment, slabOf, solidSvg } = K;"]]),
   module("content.mjs", "C"),
   module("hardware.mjs", "Hw"),
+  module("i18n.mjs", "I18n"),
   module("data.mjs", "Dt"),
   module("model.mjs", "M", [['import { ENV, LOGS, RUNS, SOURCES } from "./data.mjs";', "const { ENV, LOGS, RUNS, SOURCES } = Dt;"], ['import { SPECS } from "./hardware.mjs";', "const { SPECS } = Hw;"]]),
   `const D = ${JSON.stringify(DATA)};`,
@@ -105,8 +106,8 @@ const HOOK = "Decode reads every weight for every token. Watch the bytes leave t
 const SUB = "L4 or GB10. BF16 or FP8. Fill the pool. Break the cooling.";
 const DESCRIPTION = "An interactive isometric model of an NVIDIA L4 and an NVIDIA GB10 serving a language model with SGLang: the request path through the CPU and PCIe or NVLink-C2C, the KV pool in the memory chips, prefill on the SMs and the weight stream of every decode step, with the pool sizes and speeds measured in the SGLang 101 manual.";
 
-const parts = PART_ORDER.map((part, i) => `<button type="button" class="gm-part" data-gm-part="${part}" aria-pressed="false"><span class="gm-part-n">${String(i + 1).padStart(2, "0")}</span><strong>${escape(typeof NAMES[part] === "string" ? NAMES[part] : NAMES[part].l4.replace("PCIE GEN4 X16", "LINK"))}</strong></button>`).join("");
-const scenarios = SCENARIOS.map((item) => `<button type="button" class="gm-scenario" data-gm-scenario='${escape(JSON.stringify(item.config))}'><strong>${escape(item.label)}</strong><span>${escape(item.note)}</span></button>`).join("");
+const parts = PART_ORDER.map((part, i) => `<button type="button" class="gm-part" data-gm-part="${part}" aria-pressed="false"><span class="gm-part-n">${String(i + 1).padStart(2, "0")}</span><strong data-part-label="${part}">${escape(typeof NAMES[part] === "string" ? NAMES[part] : NAMES[part].l4.replace("PCIE GEN4 X16", "LINK"))}</strong></button>`).join("");
+const scenarios = SCENARIOS.map((item, i) => `<button type="button" class="gm-scenario" data-gm-scenario='${escape(JSON.stringify(item.config))}' data-scenario-i="${i}"><strong>${escape(item.label)}</strong><span>${escape(item.note)}</span></button>`).join("");
 const option = (value, text, on = false) => `<option value="${value}"${on ? " selected" : ""}>${escape(text)}</option>`;
 
 const STEP = `<div class="gm-step" aria-label="One decode step">
@@ -121,7 +122,7 @@ const plate = k.plateHtml({
   body: `<div class="gm-stage" data-gm-stage tabindex="0" role="group" aria-label="GPU machine. Space or Enter runs or pauses. Right arrow advances one step. E explodes the machine. B breaks one part. R repairs it. Click a part to inspect it.">${svg}</div>`,
 });
 
-const legend = [["w", "weights"], ["r", "read this step"], ["kv", "pool: other requests"], ["me", "pool: this request"], ["pre", "pool: reused prefix"], ["free", "pool: free"]].map(([c, text]) => `<li><i class="gm-key" data-c="${c}"></i>${escape(text)}</li>`).join("");
+const legend = [["w", "weights"], ["r", "read this step"], ["kv", "pool: other requests"], ["me", "pool: this request"], ["pre", "pool: reused prefix"], ["free", "pool: free"]].map(([c, text]) => `<li><i class="gm-key" data-c="${c}"></i><span data-legend-key="${c}">${escape(text)}</span></li>`).join("");
 const abstract = (gpu) => ABSTRACT[gpu].map((line) => `<li>${escape(line)}</li>`).join("");
 
 const html = `<!DOCTYPE html>
@@ -177,6 +178,7 @@ const html = `<!DOCTYPE html>
         <a href="about.html">About</a>
         <a href="https://github.com/rohitg00/ai-engineering-from-scratch" target="_blank" rel="noopener" class="header-github">GitHub <span class="star-count" data-loading="true" aria-label="GitHub stars">…</span></a>
       </nav>
+      <div id="langPicker"></div>
       <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme" type="button"><span class="theme-icon" id="themeIcon">N</span></button>
     </div>
   </header>
@@ -184,10 +186,10 @@ const html = `<!DOCTYPE html>
   <main id="main" class="gm">
     <div class="gm-screen">
     <section class="gm-hero">
-      <p class="gm-eyebrow">FIG_GPU · An interactive simulation</p>
+      <p class="gm-eyebrow" data-gm-eyebrow>FIG_GPU · An interactive simulation</p>
       <div class="gm-hero-row">
-        <h1>${TITLE}</h1>
-        <p class="gm-hook">${escape(HOOK)} <span class="gm-sub">${escape(SUB)}</span></p>
+        <h1 data-gm-title>${TITLE}</h1>
+        <p class="gm-hook" data-gm-hook>${escape(HOOK)} <span class="gm-sub" data-gm-sub>${escape(SUB)}</span></p>
       </div>
     </section>
 
@@ -201,7 +203,7 @@ const html = `<!DOCTYPE html>
           <button type="button" class="gm-btn" data-gm-explode aria-pressed="false">Explode</button>
           <button type="button" class="gm-btn" data-gm-reset>Reset</button>
           <div class="gm-speed" role="group" aria-label="Animation speed">
-            <span>Speed</span>
+            <span data-gm-speed-label>Speed</span>
             <button type="button" data-gm-speed="0.5" aria-pressed="false">½×</button>
             <button type="button" data-gm-speed="1" aria-pressed="true">1×</button>
             <button type="button" data-gm-speed="2" aria-pressed="false">2×</button>
@@ -209,30 +211,30 @@ const html = `<!DOCTYPE html>
           </div>
         </div>
         <div class="gm-switches">
-          <label class="gm-select"><span>GPU</span><select id="gm-gpu">${option("l4", "NVIDIA L4", true)}${option("gb10", "NVIDIA GB10")}</select></label>
-          <label class="gm-select"><span>Weights</span><select id="gm-dtype">${option("bf16", "BF16", true)}${option("fp8", "FP8")}</select></label>
-          <label class="gm-select"><span>Memory fraction</span><select id="gm-frac" data-gpu="l4">${option("0.85", "0.85 (kit default)", true)}${option("0.74", "0.74 (smaller)")}</select></label>
-          <label class="gm-select"><span>Workload</span><select id="gm-workload">${option("unique", "Unique prompts", true)}${option("shared", "Shared system prompt")}</select></label>
-          <label class="gm-select gm-range" data-gm-users-wrap><span>Users</span><input type="range" id="gm-users" min="0" max="${M.USERS.length - 1}" step="1" value="${M.USERS.indexOf(M.DEFAULTS.users)}" aria-label="Concurrent users"><output data-gm-users-out>${M.DEFAULTS.users}</output></label>
-          <label class="gm-select" data-gm-shared-wrap hidden><span>Shared tokens</span><select id="gm-shared">${M.SHARED.map((s) => option(s, s.toLocaleString("en-US"), s === M.DEFAULTS.shared)).join("")}</select></label>
-          <label class="gm-switch"><input type="checkbox" id="gm-graphs" checked><span>CUDA graphs</span></label>
-          <label class="gm-switch"><input type="checkbox" id="gm-radix" checked><span>Radix cache</span></label>
-          <label class="gm-switch"><input type="checkbox" id="gm-clock"><span>Hot card</span></label>
+          <label class="gm-select"><span data-gm-switch="gpu">GPU</span><select id="gm-gpu">${option("l4", "NVIDIA L4", true)}${option("gb10", "NVIDIA GB10")}</select></label>
+          <label class="gm-select"><span data-gm-switch="dtype">Weights</span><select id="gm-dtype">${option("bf16", "BF16", true)}${option("fp8", "FP8")}</select></label>
+          <label class="gm-select"><span data-gm-switch="frac">Memory fraction</span><select id="gm-frac" data-gpu="l4">${option("0.85", "0.85 (kit default)", true)}${option("0.74", "0.74 (smaller)")}</select></label>
+          <label class="gm-select"><span data-gm-switch="workload">Workload</span><select id="gm-workload">${option("unique", "Unique prompts", true)}${option("shared", "Shared system prompt")}</select></label>
+          <label class="gm-select gm-range" data-gm-users-wrap><span data-gm-switch="users">Users</span><input type="range" id="gm-users" min="0" max="${M.USERS.length - 1}" step="1" value="${M.USERS.indexOf(M.DEFAULTS.users)}" aria-label="Concurrent users"><output data-gm-users-out>${M.DEFAULTS.users}</output></label>
+          <label class="gm-select" data-gm-shared-wrap hidden><span data-gm-switch="shared">Shared tokens</span><select id="gm-shared">${M.SHARED.map((s) => option(s, s.toLocaleString("en-US"), s === M.DEFAULTS.shared)).join("")}</select></label>
+          <label class="gm-switch"><input type="checkbox" id="gm-graphs" checked><span data-gm-switch="graphs">CUDA graphs</span></label>
+          <label class="gm-switch"><input type="checkbox" id="gm-radix" checked><span data-gm-switch="radix">Radix cache</span></label>
+          <label class="gm-switch"><input type="checkbox" id="gm-clock"><span data-gm-switch="clock">Hot card</span></label>
         </div>
         <p class="gm-sr" data-gm-live aria-live="polite"></p>
       </div>
 
       <aside class="gm-left" aria-label="Steps and scenarios">
         <div class="gm-mode" role="group" aria-label="Play mode"><button type="button" data-gm-mode="manual" aria-pressed="true">Manual</button><button type="button" data-gm-mode="auto" aria-pressed="false">Auto</button></div>
-        <ol class="gm-steps">${M.STEPS.map((step, i) => `<li><button type="button" class="gm-stepbtn" data-gm-stepbtn="${i}" data-status="${i ? "later" : "next"}"${i ? " disabled" : ""}><span class="gm-num">${i + 1}</span><span class="gm-stepname">${escape(step.name)}</span></button></li>`).join("")}</ol>
+        <ol class="gm-steps">${M.STEPS.map((step, i) => `<li><button type="button" class="gm-stepbtn" data-gm-stepbtn="${i}" data-status="${i ? "later" : "next"}"${i ? " disabled" : ""}><span class="gm-num">${i + 1}</span><span class="gm-stepname" data-step-name="${i}">${escape(step.name)}</span></button></li>`).join("")}</ol>
         <a href="#" class="gm-restart" data-gm-restart>Start over</a>
-        <h2 class="gm-gap">Try to break it</h2>
-        <p class="gm-muted">Each one sets the switches and runs one request again. Every number comes from a measured run.</p>
+        <h2 class="gm-gap" data-gm-break-title>Try to break it</h2>
+        <p class="gm-muted" data-gm-break-desc>Each one sets the switches and runs one request again. Every number comes from a measured run.</p>
         <div class="gm-scenarios">${scenarios}</div>
         <div class="gm-look gm-look--side" role="group" aria-label="Figure style">
-          <label>Hand-drawn wobble <input type="range" id="gm-wobble" min="0" max="5" step="0.1" value="1.6"></label>
-          <span class="gm-swatches" role="group" aria-label="Solder mask colour">Board ${Object.keys(PALETTES).map((name) => `<button type="button" class="gm-sw" data-gm-pal="${name}" aria-label="${name}" aria-pressed="${name === "green"}"></button>`).join("")}</span>
-          <label class="gm-switch"><input type="checkbox" id="gm-labels" checked><span>Labels</span></label>
+          <label><span data-gm-look="wobble">Hand-drawn wobble</span> <input type="range" id="gm-wobble" min="0" max="5" step="0.1" value="1.6"></label>
+          <span class="gm-swatches" role="group" aria-label="Solder mask colour"><span data-gm-look="board">Board</span> ${Object.keys(PALETTES).map((name) => `<button type="button" class="gm-sw" data-gm-pal="${name}" aria-label="${name}" aria-pressed="${name === "green"}"></button>`).join("")}</span>
+          <label class="gm-switch"><input type="checkbox" id="gm-labels" checked><span data-gm-look="labels">Labels</span></label>
         </div>
       </aside>
 
@@ -240,21 +242,21 @@ const html = `<!DOCTYPE html>
         <p class="gm-hintbar"><span data-gm-hint>1. A question comes in through the cable.</span><span class="gm-badge" data-gm-badge title="Animation speed against the measured time">ready</span></p>
         <div class="gm-figure iso iso-ink">${plate}</div>
         <p class="gm-flash" data-gm-flash aria-live="polite"></p>
-        <p class="gm-idea"><strong>The big idea</strong>Memory, not math, sets the speed of decode, and the KV pool sets how many users fit.</p>
+        <p class="gm-idea" data-gm-idea><strong>The big idea</strong>Memory, not math, sets the speed of decode, and the KV pool sets how many users fit.</p>
         ${STEP}
-        <p class="gm-now"><span>Now</span><strong data-gm-stage-name>Ready</strong></p>
+        <p class="gm-now"><span data-gm-now-label>Now</span><strong data-gm-stage-name>Ready</strong></p>
       </div>
 
       <aside class="gm-right" aria-label="Run details">
         <div class="gm-readouts gm-readouts--side" aria-label="Live readouts">
-          <div class="gm-readout"><span>KV pool</span><strong data-gm-pool>0</strong></div>
-          <div class="gm-readout"><span>Requests</span><strong data-gm-running>0</strong></div>
-          <div class="gm-readout"><span>Tokens per step</span><strong data-gm-tps>0</strong></div>
-          <div class="gm-readout"><span>Weight read</span><strong data-gm-share>0</strong></div>
-          <div class="gm-readout"><span>Time per token</span><strong data-gm-tpot>0</strong></div>
-          <div class="gm-readout"><span>First token</span><strong data-gm-ttft>0</strong></div>
-          <div class="gm-readout"><span>Output</span><strong data-gm-toks>0</strong></div>
-          <div class="gm-readout"><span>Clock</span><strong data-gm-clock>0</strong></div>
+          <div class="gm-readout"><span data-ro-label="pool">KV pool</span><strong data-gm-pool>0</strong></div>
+          <div class="gm-readout"><span data-ro-label="running">Requests</span><strong data-gm-running>0</strong></div>
+          <div class="gm-readout"><span data-ro-label="tps">Tokens per step</span><strong data-gm-tps>0</strong></div>
+          <div class="gm-readout"><span data-ro-label="share">Weight read</span><strong data-gm-share>0</strong></div>
+          <div class="gm-readout"><span data-ro-label="tpot">Time per token</span><strong data-gm-tpot>0</strong></div>
+          <div class="gm-readout"><span data-ro-label="ttft">First token</span><strong data-gm-ttft>0</strong></div>
+          <div class="gm-readout"><span data-ro-label="toks">Output</span><strong data-gm-toks>0</strong></div>
+          <div class="gm-readout"><span data-ro-label="clock">Clock</span><strong data-gm-clock>0</strong></div>
         </div>
         <div class="gm-tabs" role="tablist" aria-label="Details">
           <button type="button" role="tab" id="gm-tab-run" aria-controls="gm-panel-run" aria-selected="true" data-gm-tab="run">Run</button>
@@ -264,14 +266,14 @@ const html = `<!DOCTYPE html>
           <button type="button" role="tab" id="gm-tab-specs" aria-controls="gm-panel-specs" aria-selected="false" tabindex="-1" data-gm-tab="specs">Specs</button>
         </div>
         <div class="gm-panel" id="gm-panel-run" role="tabpanel" aria-labelledby="gm-tab-run" data-gm-panel="run">
-          <p class="gm-label">Machine</p>
+          <p class="gm-label" data-run-label="machine">Machine</p>
           <p class="gm-work" data-gm-model></p>
-          <p class="gm-label">Workload</p>
+          <p class="gm-label" data-run-label="workload">Workload</p>
           <p class="gm-work" data-gm-work></p>
-          <p class="gm-label">Outcome <span class="gm-status" data-gm-status data-status="served">served</span></p>
+          <p class="gm-label" data-run-label="outcome"><span data-run-outcome-title>Outcome</span> <span class="gm-status" data-gm-status data-status="served">served</span></p>
           <p class="gm-truth" data-gm-outcome></p>
           <p class="gm-muted" data-gm-measured></p>
-          <p class="gm-honest">This is a simulation. The page does not run a model in your browser. The pool sizes, weight sizes, chunk sizes, step times, first-token times and throughputs are medians of three seeds from the SGLang 101 runs on one NVIDIA L4 and one NVIDIA GB10. The admission count and the weight-read share are arithmetic on those numbers and the published bandwidth. Where a setting was not measured, the page says so. The motion is paced for reading, not to scale.</p>
+          <p class="gm-honest" data-gm-honest>This is a simulation. The page does not run a model in your browser. The pool sizes, weight sizes, chunk sizes, step times, first-token times and throughputs are medians of three seeds from the SGLang 101 runs on one NVIDIA L4 and one NVIDIA GB10. The admission count and the weight-read share are arithmetic on those numbers and the published bandwidth. Where a setting was not measured, the page says so. The motion is paced for reading, not to scale.</p>
           <div class="gm-share">
             <button type="button" class="gm-btn" data-gm-copy>Copy link to this setup</button>
           </div>
@@ -287,7 +289,7 @@ const html = `<!DOCTYPE html>
           <div class="gm-inspect" data-gm-inspect aria-live="polite"><p class="gm-muted">Select a part of the machine, or pick one from the list, to see what it does for one request.</p></div>
         </div>
         <div class="gm-panel" id="gm-panel-trace" role="tabpanel" aria-labelledby="gm-tab-trace" data-gm-panel="trace" hidden>
-          <p class="gm-muted">One line for each step of the request.</p>
+          <p class="gm-muted" data-gm-trace-intro>One line for each step of the request.</p>
           <ol class="gm-trace" data-gm-trace></ol>
         </div>
         <div class="gm-panel" id="gm-panel-specs" role="tabpanel" aria-labelledby="gm-tab-specs" data-gm-panel="specs" hidden>
@@ -297,24 +299,24 @@ const html = `<!DOCTYPE html>
           <p class="gm-label">NVIDIA GB10</p>
           <dl class="gm-specs">${specRows("gb10")}</dl>
           <ul class="gm-abstract">${abstract("gb10")}</ul>
-          <p class="gm-source-line">Hardware sources: the NVIDIA L4 product page and product brief, the NVIDIA Ada GPU architecture whitepaper, the NVIDIA DGX Spark product page and user guide, and the NVIDIA GB10 talk at Hot Chips 2025.</p>
+          <p class="gm-source-line" data-gm-source-line>Hardware sources: the NVIDIA L4 product page and product brief, the NVIDIA Ada GPU architecture whitepaper, the NVIDIA DGX Spark product page and user guide, and the NVIDIA GB10 talk at Hot Chips 2025.</p>
         </div>
       </aside>
     </section>
     </div>
 
     <section class="gm-why container">
-      <h2>What the machine shows</h2>
+      <h2 data-why="title">What the machine shows</h2>
       <div class="gm-why-grid">
-        <p><strong>Decode is a memory read.</strong> On the L4, one decode step of Qwen3-8B in BF16 reads 16.41 GB of weights. At the peak 300 GB/s that takes 54.7 ms, and the measured step at one user took 60.16 ms. The SMs wait for the bytes.</p>
-        <p><strong>Fewer bytes, faster steps.</strong> FP8 weights are 8.81 GB on the L4. The step at one user fell to 39.66 ms, and the freed memory grew the KV pool from 24,094 to 142,369 tokens. At 64 users the output went from 250.85 to 735.91 tok/s.</p>
-        <p><strong>The pool decides who runs.</strong> The scheduler admits a request only when the pool has room. At 64 users the BF16 pool holds 37 requests and the rest wait. At a memory fraction of 0.74, four 2,048-token prefixes no longer fit, and the median first token took 12.6 s, against 0.47 s at 1,024 shared tokens.</p>
-        <p><strong>Launch gaps are small.</strong> Without CUDA graphs, each kernel launch crosses from the host. On the L4 that added 0.47 ms to a 60 ms step at one user. Next to the weight read, the launch path barely matters.</p>
+        <p data-why="p1"><strong>Decode is a memory read.</strong> On the L4, one decode step of Qwen3-8B in BF16 reads 16.41 GB of weights. At the peak 300 GB/s that takes 54.7 ms, and the measured step at one user took 60.16 ms. The SMs wait for the bytes.</p>
+        <p data-why="p2"><strong>Fewer bytes, faster steps.</strong> FP8 weights are 8.81 GB on the L4. The step at one user fell to 39.66 ms, and the freed memory grew the KV pool from 24,094 to 142,369 tokens. At 64 users the output went from 250.85 to 735.91 tok/s.</p>
+        <p data-why="p3"><strong>The pool decides who runs.</strong> The scheduler admits a request only when the pool has room. At 64 users the BF16 pool holds 37 requests and the rest wait. At a memory fraction of 0.74, four 2,048-token prefixes no longer fit, and the median first token took 12.6 s, against 0.47 s at 1,024 shared tokens.</p>
+        <p data-why="p4"><strong>Launch gaps are small.</strong> Without CUDA graphs, each kernel launch crosses from the host. On the L4 that added 0.47 ms to a 60 ms step at one user. Next to the weight read, the launch path barely matters.</p>
       </div>
       <div class="gm-cta">
-        <p>Measure it on your own GPU.</p>
-        <a class="gm-btn gm-btn--primary" href="manual-sglang-101.html">Read the SGLang 101 manual</a>
-        <a class="gm-btn" href="/lesson?path=${encodeURIComponent("phases/17-infrastructure-and-production/09-production-quantization")}">Production quantization</a>
+        <p data-why="cta-p">Measure it on your own GPU.</p>
+        <a class="gm-btn gm-btn--primary" href="manual-sglang-101.html" data-why="cta-manual">Read the SGLang 101 manual</a>
+        <a class="gm-btn" href="/lesson?path=${encodeURIComponent("phases/17-infrastructure-and-production/09-production-quantization")}" data-why="cta-quant">Production quantization</a>
       </div>
     </section>
   </main>
@@ -346,6 +348,8 @@ const html = `<!DOCTYPE html>
       });
     })();
   </script>
+  <script src="langs.js?v=20260802a"></script>
+  <script src="lang-picker.js?v=20261010a" defer></script>
   <script src="header.js?v=20261021a" defer></script>
   <script>${wrapped.replace(/<\/(script)/gi, "<\\/$1")}</script>
 </body>
